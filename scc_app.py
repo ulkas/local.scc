@@ -78,13 +78,48 @@ def catalog(path, extra=None):
     if not path.startswith('/') or path.startswith('//') or '\\' in path or '://' in path:
         raise ValueError('Invalid catalog path')
     parsed = urllib.parse.urlsplit(path)
-    params = dict(urllib.parse.parse_qsl(parsed.query))
-    params.update({'DV': '1', 'HDR': '1', 'lang': 'sk', 'pro': 'kraska', 'skin': 'estuary', 'uid': UUID, 'ver': '2.0'})
-    if extra:
-        params.update(extra)
-    r = SESSION.get(BASE + parsed.path, params=sorted(params.items()), timeout=25)
+    params = urllib.parse.parse_qsl(parsed.query)
+    extras = list((extra.items() if isinstance(extra, dict) else extra) if extra else [])
+    defaults = [('DV', '1'), ('HDR', '1'), ('lang', 'sk'), ('pro', 'kraska'), ('skin', 'estuary'), ('uid', UUID), ('ver', '2.0')]
+    overridden = {key for key, _ in extras}
+    params = [(key, value) for key, value in params if key not in overridden and key not in {name for name, _ in defaults}]
+    params.extend((key, value) for key, value in defaults if key not in overridden)
+    params.extend(extras)
+    r = SESSION.get(BASE + parsed.path, params=sorted(params), timeout=25)
     r.raise_for_status()
     return r.json()
+
+
+FILTER_PARAMS = frozenset('s typ q la HDR DV atmos hevc ste dub tit r y mu co ge ca of od m kwd b f page limit ms'.split())
+FILTER_INTEGER_PARAMS = frozenset('HDR DV atmos hevc ste dub tit m page limit ms'.split())
+
+
+def filter_params(query):
+    """Validate and preserve repeated, allowlisted SCC filter parameters."""
+    result = []
+    for key, values in query.items():
+        if key.endswith('[]') and key[:-2] in ('mu', 'co', 'ge', 'ca'):
+            key = key[:-2]
+        if key not in FILTER_PARAMS or len(values) > 20:
+            raise ValueError('Invalid filter parameter')
+        for value in values:
+            if len(value) > 100 or any(ord(char) < 32 for char in value):
+                raise ValueError('Invalid filter value')
+            if key in FILTER_INTEGER_PARAMS and (not value.isdecimal() or len(value) > 6):
+                raise ValueError('Invalid numeric filter value')
+            if key in ('mu', 'co', 'ge', 'ca') and not re.fullmatch(r'!?\d{1,12}', value):
+                raise ValueError('Invalid facet identifier')
+            if key in ('r', 'y', 'b', 'f') and not re.fullmatch(r'[<>]?\d{1,14}(?::\d{1,14})?', value):
+                raise ValueError('Invalid range filter')
+            if key in ('of',) and not re.fullmatch(r'[a-zA-Z0-9._-]{1,40}', value):
+                raise ValueError('Invalid sort field')
+            if key == 'od' and value not in ('asc', 'desc'):
+                raise ValueError('Invalid sort direction')
+            wire_key = key + '[]' if key in ('mu', 'co', 'ge', 'ca') else key
+            result.append((wire_key, value))
+    if len(result) > 60:
+        raise ValueError('Too many filter values')
+    return result
 
 
 # Windows DPAPI: encrypted for the current Windows user, never store password.
@@ -350,28 +385,50 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         url = urllib.parse.urlsplit(self.path)
         if url.path == '/':
-            page = PAGE.replace('__CSRF__', json.dumps(CSRF)).encode('utf-8')
+            index = ROOT / 'static' / 'index.html'
+            css = ROOT / 'static' / 'app.css'
+            script = ROOT / 'static' / 'app.js'
+            if not all(path.is_file() for path in (index, css, script)):
+                self.send_error(500, 'Static UI files are missing')
+                return
+            source = index.read_text(encoding='utf-8')
+            source = source.replace('<link rel="stylesheet" href="/static/app.css">', '<style>' + css.read_text(encoding='utf-8') + '</style>')
+            source = source.replace('<script defer src="/static/app.js"></script>', '<meta name="local-token" content="' + html.escape(CSRF, quote=True) + '">')
+            source = source.replace('</body>', '<script>' + script.read_text(encoding='utf-8') + '</script></body>')
+            page = source.encode('utf-8')
             self.send_response(200)
             self.send_header('Content-Type', 'text/html; charset=utf-8')
             self.send_header('X-Local-App', 'SCCLocal')
             self.send_header('Cache-Control', 'no-store')
-            self.send_header('Content-Security-Policy', "default-src 'self'; script-src 'unsafe-inline' 'self'; style-src 'unsafe-inline' 'self'; connect-src 'self'; base-uri 'none'; form-action 'self'")
+            self.send_header('Content-Security-Policy', "default-src 'self'; img-src 'self' https: data:; script-src 'unsafe-inline' 'self'; style-src 'unsafe-inline' 'self'; connect-src 'self'; base-uri 'none'; form-action 'self'")
             self.send_header('Referrer-Policy','no-referrer')
             self.send_header('Content-Length', str(len(page)))
             self.end_headers()
             self.wfile.write(page)
             return
         if not self.check():return
-        qs = urllib.parse.parse_qs(url.query)
+        qs = urllib.parse.parse_qs(url.query, keep_blank_values=True)
         try:
             if url.path == '/api/status':
                 self.respond(200, {'session': bool(KRA_ID)});return
             if url.path == '/api/search':
                 q = qs.get('q',[''])[0].strip()
                 id = qs.get('id',[''])[0]
-                if id not in ('search-movies','search-series') or not (1 <= len(q) <= 100):
+                if id not in ('search-movies','search-series','search-people') or not (1 <= len(q) <= 100):
                     raise ValueError('Invalid search')
-                data = catalog('/Search/'+id, {'id':id,'search':q})
+                extra = [('id', id), ('search', q)]
+                if id == 'search-people':
+                    extra.append(('ms', '1'))
+                data = catalog('/Search/'+id, extra)
+            elif url.path == '/api/filter':
+                data = catalog('/Filter', filter_params(qs))
+            elif url.path == '/api/facets':
+                data = catalog('/Filter/facet', filter_params(qs))
+            elif url.path == '/api/catalog':
+                path = qs.get('path',['/'])[0] or '/'
+                if path != '/' and not path.startswith(('/FGet/','/Play/','/Search/')):
+                    raise ValueError('Invalid catalog path')
+                data = catalog(path)
             elif url.path == '/api/browse':
                 path = qs.get('path',[''])[0]
                 if not path.startswith(('/FGet/','/Play/')):
