@@ -1,0 +1,27 @@
+# Local credentials and session material
+/secrets/*
+!/secrets/*.example
+/sc-uuid.txt
+
+# Python environments, runtime downloads and generated files
+/.venv/
+/WinPython64-3.13.18.0dot/
+/python-runtime/
+__pycache__/
+*.py[cod]
+
+# Local editor and OS files
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+# Other local secrets and generated data
+.env*
+/.git-auth/
+*.pem
+*.key
+*.bak
+*.backup
+*.db
+*.sqlite*
+*.log

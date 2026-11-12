@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<addon id="service.sc.helper"
+       name="SC Helper"
+       version="1.22.1"
+       provider-name="sc">
+  <requires>
+    <import addon="xbmc.python" version="3.0.0"/>
+  </requires>
+  <extension point="xbmc.service" library="service.py">
+    <provides>executable</provides>
+  </extension>
+  <extension point="xbmc.addon.metadata">
+    <summary lang="en">Stream proxy helper for SC</summary>
+    <description lang="en">HTTP proxy service for stream resolution and proxying</description>
+    <platform>all</platform>
+  </extension>
+</addon>
