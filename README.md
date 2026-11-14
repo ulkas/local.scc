@@ -29,8 +29,10 @@ Skript si bezpečne vypýta prihlasovacie meno a heslo ku kra.sk, prihlási sa, 
 
 ## Funkcie
 
-Aplikácia umožňuje prehliadať a vyhľadávať filmy, seriály a osoby. Výsledky môžeš filtrovať a zoraďovať.
+Aplikácia umožňuje prehliadať a vyhľadávať filmy a seriály. Výsledky môžeš filtrovať a zoraďovať.
 
 V detaile titulu nájdeš epizódy a dostupné streamy. Stream môžeš prehrať vo VLC, stiahnuť alebo skopírovať jeho odkaz.
 
-Obľúbené položky, zoznamy a história sa ukladajú v prehliadači.
+Obľúbené položky, zoznamy a história sa ukladajú v prehliadači. Playlist umožňuje prehrávať viac titulov za sebou.
+
+Náhľady a obrázky sa ukladajú do lokálnej cache.

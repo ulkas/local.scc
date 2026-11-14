@@ -25,3 +25,6 @@ Thumbs.db
 *.db
 *.sqlite*
 *.log
+
+# Persistent feed and poster cache
+/.cache/

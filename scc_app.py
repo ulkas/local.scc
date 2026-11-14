@@ -25,6 +25,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 import requests
+from feed_cache import get_feed, feed_id_for, get_image
 
 ROOT = Path(__file__).resolve().parent
 SECRETS = ROOT / 'secrets'
@@ -258,6 +259,40 @@ def open_in_vlc(url):
     subprocess.Popen([str(find_vlc()), url], close_fds=True)
 
 
+def open_vlc_playlist(tracks):
+    if not isinstance(tracks, list) or not 1 <= len(tracks) <= 100:
+        raise ValueError('Playlist musí obsahovať 1 až 100 položiek')
+    lines = ['#EXTM3U']
+    for track in tracks:
+        if not isinstance(track, dict):
+            raise ValueError('Invalid playlist track')
+        url = track.get('url', '')
+        if not isinstance(url, str) or len(url) > 8192 or any(ord(c) < 32 for c in url):
+            raise ValueError('Invalid stream URL')
+        parsed = urllib.parse.urlsplit(url)
+        if parsed.scheme != 'https' or not parsed.hostname or parsed.username or parsed.password:
+            raise ValueError('Neplatná HTTPS adresa streamu')
+        title = str(track.get('title', 'Stream')).replace('\r', ' ').replace('\n', ' ')[:500]
+        lines.extend(['#EXTINF:-1,' + title, url])
+    vlc = find_vlc()
+    directory = ROOT / '.cache' / 'playlists'
+    directory.mkdir(parents=True, exist_ok=True)
+    # Old launch files contain expiring playback links, not the saved queue.
+    for old in directory.glob('queue-*.m3u8'):
+        try:
+            if time.time() - old.stat().st_mtime > 86400:
+                old.unlink()
+        except OSError:
+            pass
+    path = directory / ('queue-' + secrets.token_hex(12) + '.m3u8')
+    path.write_text('\n'.join(lines) + '\n', encoding='utf-8')
+    try:
+        subprocess.Popen([str(vlc), str(path)], close_fds=True)
+    except OSError:
+        path.unlink(missing_ok=True)
+        raise
+
+
 PAGE = r'''<!doctype html><html lang="sk"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>SCC · lokálne</title><style>
 :root{font-family:system-ui,-apple-system,Segoe UI,sans-serif;color-scheme:dark;background:#101318;color:#e6eaf1}body{max-width:1440px;margin:0 auto;padding:28px 18px}h1{font-size:1.6rem;margin:0 0 8px}p{color:#9aa6b7}button,input,select{font:inherit;border-radius:9px;padding:10px 13px}input,select{background:#1d2430;color:white;border:1px solid #3a4556}input{flex:1;min-width:180px}button{background:#3478ef;color:white;border:0;cursor:pointer}button:hover{filter:brightness(1.15)}button.secondary{background:#293449}.toolbar{display:flex;gap:9px;flex-wrap:wrap;margin:18px 0}.tabs{display:flex;gap:8px;margin:12px 0}.tabs button.selected{background:#3478ef}.tabs button{background:#293449}.item{padding:13px 0;border-bottom:1px solid #303a48;display:flex;justify-content:space-between;align-items:center;gap:12px}.item .name{font-weight:600}.meta{font-size:.83rem;color:#a0adbf;margin-top:4px}.actions{display:flex;gap:8px;flex-wrap:wrap}.actions button{font-size:.85rem;padding:8px 10px}#notice{min-height:20px;color:#a9b7c8;margin:10px 0}#crumb{margin:14px 0;color:#a9b7c8}#crumb button{background:transparent;color:#91b8ff;padding:3px}.small{font-size:.83rem}a{color:#8cb7ff}#linkbox{word-break:break-all;padding:14px;background:#1d2430;border-radius:9px;margin:14px 0;display:none}.layout{display:grid;grid-template-columns:minmax(0,3fr) minmax(250px,1fr);gap:30px;align-items:start}.history{position:sticky;top:18px;background:#171c24;border:1px solid #303a48;border-radius:12px;padding:16px}.history h2{font-size:1.15rem;margin:0}.history .tabs{margin:12px 0}.history-list .item{padding:10px 0}.history-list button{background:transparent;color:#91b8ff;text-align:left;padding:2px 0}.history-empty{font-size:.9rem;color:#9aa6b7}@media(max-width:850px){.layout{grid-template-columns:1fr}.history{position:static}}
 </style></head><body><div class="layout"><main>
@@ -400,7 +435,7 @@ class Handler(BaseHTTPRequestHandler):
             self.send_header('Content-Type', 'text/html; charset=utf-8')
             self.send_header('X-Local-App', 'SCCLocal')
             self.send_header('Cache-Control', 'no-store')
-            self.send_header('Content-Security-Policy', "default-src 'self'; img-src 'self' https: data:; script-src 'unsafe-inline' 'self'; style-src 'unsafe-inline' 'self'; connect-src 'self'; base-uri 'none'; form-action 'self'")
+            self.send_header('Content-Security-Policy', "default-src 'self'; img-src 'self' blob: data:; script-src 'unsafe-inline' 'self'; style-src 'unsafe-inline' 'self'; connect-src 'self'; base-uri 'none'; form-action 'self'")
             self.send_header('Referrer-Policy','no-referrer')
             self.send_header('Content-Length', str(len(page)))
             self.end_headers()
@@ -411,7 +446,19 @@ class Handler(BaseHTTPRequestHandler):
         try:
             if url.path == '/api/status':
                 self.respond(200, {'session': bool(KRA_ID)});return
-            if url.path == '/api/search':
+            if url.path == '/api/image':
+                body, content_type = get_image(qs.get('url', [''])[0])
+                self.send_response(200)
+                self.send_header('Content-Type', content_type)
+                self.send_header('Content-Length', str(len(body)))
+                self.send_header('Cache-Control', 'private, max-age=86400')
+                self.send_header('X-Content-Type-Options', 'nosniff')
+                self.end_headers()
+                self.wfile.write(body)
+                return
+            if url.path == '/api/feed':
+                data = get_feed(qs.get('id', [''])[0], catalog, full=qs.get('full', ['0'])[0] == '1')
+            elif url.path == '/api/search':
                 q = qs.get('q',[''])[0].strip()
                 id = qs.get('id',[''])[0]
                 if id not in ('search-movies','search-series','search-people') or not (1 <= len(q) <= 100):
@@ -421,7 +468,12 @@ class Handler(BaseHTTPRequestHandler):
                     extra.append(('ms', '1'))
                 data = catalog('/Search/'+id, extra)
             elif url.path == '/api/filter':
-                data = catalog('/Filter', filter_params(qs))
+                params = filter_params(qs)
+                feed_id = feed_id_for(params)
+                if feed_id and dict(params).get('page', '1') == '1':
+                    data = get_feed(feed_id, catalog, full=True)
+                else:
+                    data = catalog('/Filter', params)
             elif url.path == '/api/facets':
                 data = catalog('/Filter/facet', filter_params(qs))
             elif url.path == '/api/catalog':
@@ -443,13 +495,16 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self):
         if not self.check():return
         endpoint = urllib.parse.urlsplit(self.path).path
-        if endpoint not in ('/api/resolve', '/api/login', '/api/open-vlc'):
+        if endpoint not in ('/api/resolve', '/api/login', '/api/open-vlc', '/api/open-vlc-playlist'):
             self.respond(404, {'error':'Not found'});return
         try:
             length=int(self.headers.get('Content-Length','0'))
-            if length < 1 or length > 16384:
+            if length < 1 or length > (1048576 if endpoint == '/api/open-vlc-playlist' else 16384):
                 raise ValueError('Invalid request length')
             body=json.loads(self.rfile.read(length))
+            if endpoint == '/api/open-vlc-playlist':
+                open_vlc_playlist(body.get('tracks'))
+                self.respond(200, {'ok': True});return
             if endpoint == '/api/open-vlc':
                 url=body.get('url','')
                 if not isinstance(url,str):
