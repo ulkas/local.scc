@@ -26,3 +26,13 @@ Token môžeš získať priamo príkazom PowerShell. Spusti PowerShell v koreňo
 ```
 
 Skript si bezpečne vypýta prihlasovacie meno a heslo ku kra.sk, prihlási sa, použije existujúci záložný token účtu, ak je dostupný, alebo požiada službu o nový. Výslednú hodnotu uloží bez výpisu do `secrets/sc.json`. Ak tento súbor už existuje, skript ho ponechá bez zmeny. Token patrí k tvojmu účtu; neposielaj ho ani ho nepridávaj do GitHubu.
+
+## Funkcie
+
+Aplikácia umožňuje prehliadať a vyhľadávať filmy a seriály. Výsledky môžeš filtrovať a zoraďovať.
+
+V detaile titulu nájdeš epizódy a dostupné streamy. Stream môžeš prehrať vo VLC, stiahnuť alebo skopírovať jeho odkaz.
+
+Obľúbené položky, zoznamy a história sa ukladajú v prehliadači. Playlist umožňuje prehrávať viac titulov za sebou.
+
+Náhľady a obrázky sa ukladajú do lokálnej cache.

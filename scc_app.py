@@ -25,6 +25,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 import requests
+from feed_cache import get_feed, feed_id_for, get_image
 
 ROOT = Path(__file__).resolve().parent
 SECRETS = ROOT / 'secrets'
@@ -78,13 +79,48 @@ def catalog(path, extra=None):
     if not path.startswith('/') or path.startswith('//') or '\\' in path or '://' in path:
         raise ValueError('Invalid catalog path')
     parsed = urllib.parse.urlsplit(path)
-    params = dict(urllib.parse.parse_qsl(parsed.query))
-    params.update({'DV': '1', 'HDR': '1', 'lang': 'sk', 'pro': 'kraska', 'skin': 'estuary', 'uid': UUID, 'ver': '2.0'})
-    if extra:
-        params.update(extra)
-    r = SESSION.get(BASE + parsed.path, params=sorted(params.items()), timeout=25)
+    params = urllib.parse.parse_qsl(parsed.query)
+    extras = list((extra.items() if isinstance(extra, dict) else extra) if extra else [])
+    defaults = [('DV', '1'), ('HDR', '1'), ('lang', 'sk'), ('pro', 'kraska'), ('skin', 'estuary'), ('uid', UUID), ('ver', '2.0')]
+    overridden = {key for key, _ in extras}
+    params = [(key, value) for key, value in params if key not in overridden and key not in {name for name, _ in defaults}]
+    params.extend((key, value) for key, value in defaults if key not in overridden)
+    params.extend(extras)
+    r = SESSION.get(BASE + parsed.path, params=sorted(params), timeout=25)
     r.raise_for_status()
     return r.json()
+
+
+FILTER_PARAMS = frozenset('s typ q la HDR DV atmos hevc ste dub tit r y mu co ge ca of od m kwd b f page limit ms'.split())
+FILTER_INTEGER_PARAMS = frozenset('HDR DV atmos hevc ste dub tit m page limit ms'.split())
+
+
+def filter_params(query):
+    """Validate and preserve repeated, allowlisted SCC filter parameters."""
+    result = []
+    for key, values in query.items():
+        if key.endswith('[]') and key[:-2] in ('mu', 'co', 'ge', 'ca'):
+            key = key[:-2]
+        if key not in FILTER_PARAMS or len(values) > 20:
+            raise ValueError('Invalid filter parameter')
+        for value in values:
+            if len(value) > 100 or any(ord(char) < 32 for char in value):
+                raise ValueError('Invalid filter value')
+            if key in FILTER_INTEGER_PARAMS and (not value.isdecimal() or len(value) > 6):
+                raise ValueError('Invalid numeric filter value')
+            if key in ('mu', 'co', 'ge', 'ca') and not re.fullmatch(r'!?\d{1,12}', value):
+                raise ValueError('Invalid facet identifier')
+            if key in ('r', 'y', 'b', 'f') and not re.fullmatch(r'[<>]?\d{1,14}(?::\d{1,14})?', value):
+                raise ValueError('Invalid range filter')
+            if key in ('of',) and not re.fullmatch(r'[a-zA-Z0-9._-]{1,40}', value):
+                raise ValueError('Invalid sort field')
+            if key == 'od' and value not in ('asc', 'desc'):
+                raise ValueError('Invalid sort direction')
+            wire_key = key + '[]' if key in ('mu', 'co', 'ge', 'ca') else key
+            result.append((wire_key, value))
+    if len(result) > 60:
+        raise ValueError('Too many filter values')
+    return result
 
 
 # Windows DPAPI: encrypted for the current Windows user, never store password.
@@ -223,6 +259,40 @@ def open_in_vlc(url):
     subprocess.Popen([str(find_vlc()), url], close_fds=True)
 
 
+def open_vlc_playlist(tracks):
+    if not isinstance(tracks, list) or not 1 <= len(tracks) <= 100:
+        raise ValueError('Playlist musí obsahovať 1 až 100 položiek')
+    lines = ['#EXTM3U']
+    for track in tracks:
+        if not isinstance(track, dict):
+            raise ValueError('Invalid playlist track')
+        url = track.get('url', '')
+        if not isinstance(url, str) or len(url) > 8192 or any(ord(c) < 32 for c in url):
+            raise ValueError('Invalid stream URL')
+        parsed = urllib.parse.urlsplit(url)
+        if parsed.scheme != 'https' or not parsed.hostname or parsed.username or parsed.password:
+            raise ValueError('Neplatná HTTPS adresa streamu')
+        title = str(track.get('title', 'Stream')).replace('\r', ' ').replace('\n', ' ')[:500]
+        lines.extend(['#EXTINF:-1,' + title, url])
+    vlc = find_vlc()
+    directory = ROOT / '.cache' / 'playlists'
+    directory.mkdir(parents=True, exist_ok=True)
+    # Old launch files contain expiring playback links, not the saved queue.
+    for old in directory.glob('queue-*.m3u8'):
+        try:
+            if time.time() - old.stat().st_mtime > 86400:
+                old.unlink()
+        except OSError:
+            pass
+    path = directory / ('queue-' + secrets.token_hex(12) + '.m3u8')
+    path.write_text('\n'.join(lines) + '\n', encoding='utf-8')
+    try:
+        subprocess.Popen([str(vlc), str(path)], close_fds=True)
+    except OSError:
+        path.unlink(missing_ok=True)
+        raise
+
+
 PAGE = r'''<!doctype html><html lang="sk"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>SCC · lokálne</title><style>
 :root{font-family:system-ui,-apple-system,Segoe UI,sans-serif;color-scheme:dark;background:#101318;color:#e6eaf1}body{max-width:1440px;margin:0 auto;padding:28px 18px}h1{font-size:1.6rem;margin:0 0 8px}p{color:#9aa6b7}button,input,select{font:inherit;border-radius:9px;padding:10px 13px}input,select{background:#1d2430;color:white;border:1px solid #3a4556}input{flex:1;min-width:180px}button{background:#3478ef;color:white;border:0;cursor:pointer}button:hover{filter:brightness(1.15)}button.secondary{background:#293449}.toolbar{display:flex;gap:9px;flex-wrap:wrap;margin:18px 0}.tabs{display:flex;gap:8px;margin:12px 0}.tabs button.selected{background:#3478ef}.tabs button{background:#293449}.item{padding:13px 0;border-bottom:1px solid #303a48;display:flex;justify-content:space-between;align-items:center;gap:12px}.item .name{font-weight:600}.meta{font-size:.83rem;color:#a0adbf;margin-top:4px}.actions{display:flex;gap:8px;flex-wrap:wrap}.actions button{font-size:.85rem;padding:8px 10px}#notice{min-height:20px;color:#a9b7c8;margin:10px 0}#crumb{margin:14px 0;color:#a9b7c8}#crumb button{background:transparent;color:#91b8ff;padding:3px}.small{font-size:.83rem}a{color:#8cb7ff}#linkbox{word-break:break-all;padding:14px;background:#1d2430;border-radius:9px;margin:14px 0;display:none}.layout{display:grid;grid-template-columns:minmax(0,3fr) minmax(250px,1fr);gap:30px;align-items:start}.history{position:sticky;top:18px;background:#171c24;border:1px solid #303a48;border-radius:12px;padding:16px}.history h2{font-size:1.15rem;margin:0}.history .tabs{margin:12px 0}.history-list .item{padding:10px 0}.history-list button{background:transparent;color:#91b8ff;text-align:left;padding:2px 0}.history-empty{font-size:.9rem;color:#9aa6b7}@media(max-width:850px){.layout{grid-template-columns:1fr}.history{position:static}}
 </style></head><body><div class="layout"><main>
@@ -350,28 +420,67 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         url = urllib.parse.urlsplit(self.path)
         if url.path == '/':
-            page = PAGE.replace('__CSRF__', json.dumps(CSRF)).encode('utf-8')
+            index = ROOT / 'static' / 'index.html'
+            css = ROOT / 'static' / 'app.css'
+            script = ROOT / 'static' / 'app.js'
+            if not all(path.is_file() for path in (index, css, script)):
+                self.send_error(500, 'Static UI files are missing')
+                return
+            source = index.read_text(encoding='utf-8')
+            source = source.replace('<link rel="stylesheet" href="/static/app.css">', '<style>' + css.read_text(encoding='utf-8') + '</style>')
+            source = source.replace('<script defer src="/static/app.js"></script>', '<meta name="local-token" content="' + html.escape(CSRF, quote=True) + '">')
+            source = source.replace('</body>', '<script>' + script.read_text(encoding='utf-8') + '</script></body>')
+            page = source.encode('utf-8')
             self.send_response(200)
             self.send_header('Content-Type', 'text/html; charset=utf-8')
             self.send_header('X-Local-App', 'SCCLocal')
             self.send_header('Cache-Control', 'no-store')
-            self.send_header('Content-Security-Policy', "default-src 'self'; script-src 'unsafe-inline' 'self'; style-src 'unsafe-inline' 'self'; connect-src 'self'; base-uri 'none'; form-action 'self'")
+            self.send_header('Content-Security-Policy', "default-src 'self'; img-src 'self' blob: data:; script-src 'unsafe-inline' 'self'; style-src 'unsafe-inline' 'self'; connect-src 'self'; base-uri 'none'; form-action 'self'")
             self.send_header('Referrer-Policy','no-referrer')
             self.send_header('Content-Length', str(len(page)))
             self.end_headers()
             self.wfile.write(page)
             return
         if not self.check():return
-        qs = urllib.parse.parse_qs(url.query)
+        qs = urllib.parse.parse_qs(url.query, keep_blank_values=True)
         try:
             if url.path == '/api/status':
                 self.respond(200, {'session': bool(KRA_ID)});return
-            if url.path == '/api/search':
+            if url.path == '/api/image':
+                body, content_type = get_image(qs.get('url', [''])[0])
+                self.send_response(200)
+                self.send_header('Content-Type', content_type)
+                self.send_header('Content-Length', str(len(body)))
+                self.send_header('Cache-Control', 'private, max-age=86400')
+                self.send_header('X-Content-Type-Options', 'nosniff')
+                self.end_headers()
+                self.wfile.write(body)
+                return
+            if url.path == '/api/feed':
+                data = get_feed(qs.get('id', [''])[0], catalog, full=qs.get('full', ['0'])[0] == '1')
+            elif url.path == '/api/search':
                 q = qs.get('q',[''])[0].strip()
                 id = qs.get('id',[''])[0]
-                if id not in ('search-movies','search-series') or not (1 <= len(q) <= 100):
+                if id not in ('search-movies','search-series','search-people') or not (1 <= len(q) <= 100):
                     raise ValueError('Invalid search')
-                data = catalog('/Search/'+id, {'id':id,'search':q})
+                extra = [('id', id), ('search', q)]
+                if id == 'search-people':
+                    extra.append(('ms', '1'))
+                data = catalog('/Search/'+id, extra)
+            elif url.path == '/api/filter':
+                params = filter_params(qs)
+                feed_id = feed_id_for(params)
+                if feed_id and dict(params).get('page', '1') == '1':
+                    data = get_feed(feed_id, catalog, full=True)
+                else:
+                    data = catalog('/Filter', params)
+            elif url.path == '/api/facets':
+                data = catalog('/Filter/facet', filter_params(qs))
+            elif url.path == '/api/catalog':
+                path = qs.get('path',['/'])[0] or '/'
+                if path != '/' and not path.startswith(('/FGet/','/Play/','/Search/')):
+                    raise ValueError('Invalid catalog path')
+                data = catalog(path)
             elif url.path == '/api/browse':
                 path = qs.get('path',[''])[0]
                 if not path.startswith(('/FGet/','/Play/')):
@@ -386,13 +495,16 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self):
         if not self.check():return
         endpoint = urllib.parse.urlsplit(self.path).path
-        if endpoint not in ('/api/resolve', '/api/login', '/api/open-vlc'):
+        if endpoint not in ('/api/resolve', '/api/login', '/api/open-vlc', '/api/open-vlc-playlist'):
             self.respond(404, {'error':'Not found'});return
         try:
             length=int(self.headers.get('Content-Length','0'))
-            if length < 1 or length > 16384:
+            if length < 1 or length > (1048576 if endpoint == '/api/open-vlc-playlist' else 16384):
                 raise ValueError('Invalid request length')
             body=json.loads(self.rfile.read(length))
+            if endpoint == '/api/open-vlc-playlist':
+                open_vlc_playlist(body.get('tracks'))
+                self.respond(200, {'ok': True});return
             if endpoint == '/api/open-vlc':
                 url=body.get('url','')
                 if not isinstance(url,str):
