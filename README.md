@@ -27,8 +27,10 @@ Token môžeš získať priamo príkazom PowerShell. Spusti PowerShell v koreňo
 
 Skript si bezpečne vypýta prihlasovacie meno a heslo ku kra.sk, prihlási sa, použije existujúci záložný token účtu, ak je dostupný, alebo požiada službu o nový. Výslednú hodnotu uloží bez výpisu do `secrets/sc.json`. Ak tento súbor už existuje, skript ho ponechá bez zmeny. Token patrí k tvojmu účtu; neposielaj ho ani ho nepridávaj do GitHubu.
 
-## Katalóg a osobné zoznamy
+## Funkcie
 
-Lokálne rozhranie poskytuje katalóg SCC, vyhľadávanie filmov, seriálov a osôb, filtre podľa roku, žánru, krajiny, hodnotenia, jazyka, dabingu, titulkov a technických vlastností. Detail položky umožňuje prejsť na sezóny, epizódy a dostupné streamy; stream možno otvoriť v VLC, stiahnuť alebo skopírovať jeho odkaz.
+Aplikácia umožňuje prehliadať a vyhľadávať filmy, seriály a osoby. Výsledky môžeš filtrovať a zoraďovať.
 
-Položky „Pozrieť neskôr“, „Obľúbené“, „Pozreté“, história a uložené filtre sa uchovávajú v lokálnom úložisku prehliadača. Vymazanie údajov stránky v prehliadači ich odstráni. Prihlásenie ku kra.sk je potrebné na získanie prehrávacích odkazov.
+V detaile titulu nájdeš epizódy a dostupné streamy. Stream môžeš prehrať vo VLC, stiahnuť alebo skopírovať jeho odkaz.
+
+Obľúbené položky, zoznamy a história sa ukladajú v prehliadači.
